@@ -188,55 +188,64 @@ Reference the PM, Researcher, Reporter, and Critic's work to inform scheduling."
 }
 
 # ============================================================================
-# SLACK BOT SETUP
+# SLACK BOT SETUP (Optional - only if valid tokens provided)
 # ============================================================================
 
-slack_app = App(token=SLACK_BOT_TOKEN)
-
-
-@slack_app.message("project-briefs")
-def handle_project_brief(message, say, logger):
-    """Handle messages in #project-briefs channel using 5-agent pipeline."""
+# Only initialize Slack bot if we have valid tokens (not placeholders)
+slack_app = None
+if SLACK_BOT_TOKEN and not SLACK_BOT_TOKEN.startswith("xoxb-placeholder"):
     try:
-        brief_text = message.get("text", "")
-        if not brief_text:
+        slack_app = App(token=SLACK_BOT_TOKEN)
+    except Exception as e:
+        logger.warning(f"Failed to initialize Slack bot: {e}. Continuing with web-only mode.")
+
+
+# Only register Slack handlers if bot is initialized
+if slack_app:
+    @slack_app.message("project-briefs")
+    def handle_project_brief(message, say, logger):
+        """Handle messages in #project-briefs channel using 5-agent pipeline."""
+        try:
+            brief_text = message.get("text", "")
+            if not brief_text:
+                return
+
+            # Post initial message indicating processing
+            result = say("🤖 Analyzing project brief with 5-agent team...\n_(This may take a moment)_")
+            thread_ts = result["ts"]
+
+            # Run 5-agent pipeline synchronously
+            run_agent_pipeline(brief_text, say, thread_ts)
+
+        except Exception as e:
+            logger.error(f"Error handling project brief: {e}")
+            say(f"❌ Error processing brief: {str(e)}")
+
+
+    @slack_app.message()
+    def handle_mention(message, say, logger):
+        """Handle @mentions to the bot in any channel."""
+        user_id = slack_app.client.auth_test()["user_id"]
+        if f"<@{user_id}>" not in message.get("text", ""):
             return
 
-        # Post initial message indicating processing
-        result = say("🤖 Analyzing project brief with 5-agent team...\n_(This may take a moment)_")
-        thread_ts = result["ts"]
+        try:
+            text = message.get("text", "").replace(f"<@{user_id}>", "").strip()
 
-        # Run 5-agent pipeline synchronously
-        run_agent_pipeline(brief_text, say, thread_ts)
+            if not text:
+                say("Hi! Send me a project brief to analyze with our 5-agent team.")
+                return
 
-    except Exception as e:
-        logger.error(f"Error handling project brief: {e}")
-        say(f"❌ Error processing brief: {str(e)}")
+            # Post initial message
+            result = say("🤖 Analyzing with project team...\n_(This may take a moment)_")
+            thread_ts = result["ts"]
 
+            # Run 5-agent pipeline
+            run_agent_pipeline(text, say, thread_ts)
 
-@slack_app.message()
-def handle_mention(message, say, logger):
-    """Handle @mentions to the bot in any channel."""
-    if slack_app.client.auth_test()["user_id"] not in message.get("text", ""):
-        return
-
-    try:
-        text = message.get("text", "").replace(f"<@{slack_app.client.auth_test()['user_id']}>", "").strip()
-
-        if not text:
-            say("Hi! Send me a project brief to analyze with our 5-agent team.")
-            return
-
-        # Post initial message
-        result = say("🤖 Analyzing with project team...\n_(This may take a moment)_")
-        thread_ts = result["ts"]
-
-        # Run 5-agent pipeline
-        run_agent_pipeline(text, say, thread_ts)
-
-    except Exception as e:
-        logger.error(f"Error handling mention: {e}")
-        say(f"❌ Error: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error handling mention: {e}")
+            say(f"❌ Error: {str(e)}")
 
 
 def run_agent_pipeline(brief: str, say, thread_ts: str):
@@ -475,6 +484,10 @@ async def health_check():
 
 def run_socket_mode():
     """Run Slack Socket Mode in background thread."""
+    if not slack_app:
+        logger.info("Slack bot not initialized. Running in web-only mode.")
+        return
+
     if not SLACK_BOT_TOKEN or not SLACK_APP_TOKEN:
         logger.warning("Slack credentials not configured. Slack bot disabled.")
         return
