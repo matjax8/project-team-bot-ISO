@@ -1,31 +1,38 @@
 #!/usr/bin/env python3
 """
-Project Team Bot v2 - Slack Bot + FastAPI Web Server
-Combines Slack integration with streaming web API, featuring 5 specialized agents.
-Implements ISO 21500:2021 project management standards.
+Virtual Project Team v2 - FastAPI Web Server
+5-agent AI pipeline with real-time streaming and ISO 21500:2021 compliance.
+Slack integration is optional - runs as web-only if tokens are placeholders.
 """
 
 import os
 import json
 import threading
-import asyncio
-from datetime import datetime, timedelta
-from typing import Generator, AsyncGenerator
 import logging
+from datetime import datetime
+from typing import AsyncGenerator
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import uvicorn
-from slack_bolt import App
-from slack_bolt.adapter.socket_mode import SocketModeHandler
 from anthropic import Anthropic
-from fastapi.security import HTTPBearer
 
-# Configure logging
+# Slack imports - optional
+try:
+    from slack_bolt import App as SlackApp
+    from slack_bolt.adapter.socket_mode import SocketModeHandler
+    SLACK_AVAILABLE = True
+except ImportError:
+    SLACK_AVAILABLE = False
+
+# ============================================================================
+# LOGGING
+# ============================================================================
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -33,490 +40,335 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ============================================================================
 
-SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
-SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-PASSWORD = "PM888"  # Shared team password
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
+SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+PASSWORD = "PM888"
 
-# Validation
-if not all([SLACK_BOT_TOKEN, SLACK_APP_TOKEN, ANTHROPIC_API_KEY]):
-    logger.warning(
-        "Missing required Slack/Anthropic environment variables. "
-        "Slack bot will not function without them."
+def is_valid_slack_token(token: str, prefix: str) -> bool:
+    """Check if a Slack token looks real (not a placeholder)."""
+    return (
+        token
+        and token.startswith(prefix)
+        and len(token) > 20
+        and "placeholder" not in token.lower()
+        and "dummy" not in token.lower()
     )
 
+SLACK_ENABLED = (
+    SLACK_AVAILABLE
+    and is_valid_slack_token(SLACK_BOT_TOKEN, "xoxb-")
+    and is_valid_slack_token(SLACK_APP_TOKEN, "xapp-")
+)
+
+if not ANTHROPIC_API_KEY:
+    logger.warning("ANTHROPIC_API_KEY not set - analysis will fail")
+
+if SLACK_ENABLED:
+    logger.info("Slack integration enabled")
+else:
+    logger.info("Running in web-only mode (no Slack tokens)")
+
 # ============================================================================
-# AGENT SYSTEM PROMPTS - ISO 21500:2021 COMPLIANT
+# AGENT PROMPTS - ISO 21500:2021 COMPLIANT
 # ============================================================================
 
 AGENT_PROMPTS = {
-    "pm": """You are an expert Project Manager specializing in ISO 21500:2021 project management.
-Your role is to analyze project requirements and create a comprehensive project charter.
+    "pm": """You are an expert Project Manager specialising in ISO 21500:2021.
+Analyse the project brief and produce a comprehensive PROJECT CHARTER.
 
-CONTEXT: You are part of a 5-agent team analyzing project briefs in sequence.
-You work FIRST, establishing the foundation for other agents.
+Your output must cover:
+1. Project objectives and success criteria
+2. Stakeholder Register (name, role, interest, influence)
+3. Scope definition - in scope and out of scope
+4. High-level Work Breakdown Structure (WBS)
+5. Constraints, assumptions and dependencies
+6. Mapping to ISO 21500 Process Groups: Initiating, Planning, Implementing, Controlling, Closing
+7. Mapping to ISO 21500 Subject Groups: Integration, Stakeholders, Scope, Resources, Time, Cost, Risk, Quality, Procurement, Communication
 
-RESPONSIBILITIES:
-1. Extract and clarify project scope, objectives, and success criteria
-2. Identify stakeholders and create a Stakeholder Register
-3. Define the 5 Process Groups: Initiating, Planning, Implementing, Controlling, Closing
-4. Reference the 10 Subject Groups: Integration, Stakeholders, Scope, Resources, Time, Cost, Risk, Quality, Procurement, Communication
-5. Create a high-level Work Breakdown Structure (WBS)
-6. Identify constraints, assumptions, and dependencies
+Start your response with: ## PROJECT CHARTER
+Be thorough - your output feeds into the Researcher, Reporter, Critic and Scheduler.""",
 
-OUTPUT FORMAT:
-- Start with "PROJECT CHARTER" heading
-- Include stakeholder analysis
-- Define scope boundaries (in-scope, out-of-scope)
-- List success criteria
-- Map to relevant Process Groups and Subject Groups
+    "researcher": """You are an expert Research Analyst specialising in ISO 21500:2021.
+You are the SECOND agent. Build on the Project Manager's charter with deeper research.
 
-Be concise but thorough. Your analysis will feed into the Researcher's deeper analysis.""",
+Your output must cover:
+1. Risk Register with probability, impact, score and mitigation for each risk
+2. RACI matrix for key roles and deliverables
+3. Resource requirements - skills, headcount, budget estimate
+4. Technical and organisational feasibility assessment
+5. Gaps or ambiguities in the project definition
+6. Best practices and applicable standards beyond ISO 21500
+7. Assumptions that need validation
 
-    "researcher": """You are an expert Researcher and Analyst specializing in ISO 21500:2021 project management.
-Your role is to conduct detailed analysis based on the Project Manager's charter.
+Start your response with: ## RESEARCH & ANALYSIS
+Reference the PM's charter throughout.""",
 
-CONTEXT: You are the SECOND agent in a 5-agent team.
-The Project Manager has already created a charter (see previous analysis).
-You build upon their foundation with deeper research and risk analysis.
+    "reporter": """You are an expert Report Creator specialising in ISO 21500:2021 documentation.
+You are the THIRD agent. Synthesise the PM and Researcher outputs into a formal project document.
 
-RESPONSIBILITIES:
-1. Analyze project risks and create a Risk Register
-2. Identify resource requirements and constraints
-3. Evaluate technical and organizational feasibility
-4. Research best practices and applicable standards
-5. Document assumptions and dependencies
-6. Create RACI matrix for key stakeholders
-7. Identify gaps in the project definition
+Your output must cover:
+1. Executive Summary (2-3 paragraphs)
+2. Detailed section for each ISO 21500 Subject Group
+3. Communication Plan - who, what, when, how
+4. Quality Plan - standards, acceptance criteria, review process
+5. Procurement strategy (if applicable)
+6. Risk Response Plan referencing the Risk Register
+7. Resource Plan summary
 
-OUTPUT FORMAT:
-- Start with "RESEARCH & ANALYSIS" heading
-- Include Risk Register (probability, impact, mitigation)
-- Document resource constraints
-- RACI matrix for key roles
-- Feasibility assessment
-- Reference specific ISO 21500 concepts
+Start your response with: ## PROJECT PLAN REPORT
+This is a stakeholder-ready document - professional tone throughout.""",
 
-Build upon the PM's charter. Keep the Researcher's analysis focused on investigation and risk.""",
+    "critic": """You are an expert Critical Reviewer specialising in ISO 21500:2021.
+You are the FOURTH agent. Critically review all previous outputs.
 
-    "reporter": """You are an expert Report Creator specializing in ISO 21500:2021 documentation.
-Your role is to synthesize findings from PM and Researcher into a comprehensive project document.
+Your output must cover:
+1. Strengths of the project plan
+2. Gaps in ISO 21500 Process Group coverage
+3. Gaps in ISO 21500 Subject Group coverage
+4. Risks not adequately addressed
+5. Assumptions that are unrealistic or untested
+6. Inconsistencies between PM, Researcher and Reporter outputs
+7. Specific recommendations to improve the plan
+8. Open questions requiring stakeholder input
 
-CONTEXT: You are the THIRD agent in a 5-agent team.
-The PM and Researcher have provided charter and analysis (see previous work).
-You create the formal project documentation.
+Start your response with: ## CRITICAL REVIEW
+Be constructive but direct - flag real issues that could derail the project.""",
 
-RESPONSIBILITIES:
-1. Synthesize PM's charter and Researcher's analysis
-2. Create detailed project plan document
-3. Document communication plan
-4. Define quality standards and acceptance criteria
-5. Create procurement strategy if needed
-6. Document all process groups and subject groups coverage
-7. Create executive summary
+    "scheduler": """You are an expert Scheduler specialising in ISO 21500:2021 time and resource management.
+You are the FIFTH and final agent. Create a detailed schedule based on all previous outputs.
 
-OUTPUT FORMAT:
-- Start with "PROJECT PLAN REPORT" heading
-- Executive summary (1-2 paragraphs)
-- Detailed sections for each Subject Group
-- Quality and acceptance criteria
-- Communication and escalation plan
-- Resource plan summary
-- Risk response strategies
+Your output must include:
+1. Project timeline overview with total duration
+2. Phase breakdown: Initiating, Planning, Implementing, Controlling, Closing
+3. Key milestones with target dates (use relative weeks, e.g. Week 1, Week 4)
+4. TEXT-BASED GANTT CHART using ASCII characters showing all phases and milestones
+5. RESOURCING TABLE in this exact format:
 
-Reference previous findings from PM and Researcher. Create a professional, stakeholder-ready document.""",
+| Week | Role | Hours | FTE | Task |
+|------|------|-------|-----|------|
+| 1-2  | PM   | 40    | 1.0 | Project initiation |
 
-    "critic": """You are an expert Critic and Reviewer specializing in ISO 21500:2021 project management.
-Your role is to critically review all previous work and identify gaps or issues.
+6. Critical path analysis
+7. Resource constraints and mitigation
+8. Schedule risks and contingency
 
-CONTEXT: You are the FOURTH agent in a 5-agent team.
-The PM, Researcher, and Reporter have submitted their work (see previous analysis).
-You provide constructive criticism and identify improvement areas.
-
-RESPONSIBILITIES:
-1. Review alignment with ISO 21500:2021 requirements
-2. Identify gaps in coverage of 5 Process Groups
-3. Identify gaps in coverage of 10 Subject Groups
-4. Challenge assumptions and identify risks in the analysis
-5. Verify completeness of RACI matrix, Risk Register, WBS
-6. Suggest improvements to the project plan
-7. Flag potential compliance or feasibility issues
-
-OUTPUT FORMAT:
-- Start with "CRITICAL REVIEW" heading
-- Strengths of the project plan
-- Gaps identified (by Process Group and Subject Group)
-- Risks not adequately addressed
-- Recommended improvements
-- Compliance with ISO 21500:2021
-- Open questions or concerns
-
-Be constructive but thorough. Identify real issues that need addressing.""",
-
-    "scheduler": """You are an expert Scheduler specializing in resource planning and scheduling in ISO 21500:2021.
-Your role is to create a detailed schedule and resource plan for project execution.
-
-CONTEXT: You are the FIFTH and final agent in a 5-agent team.
-The PM, Researcher, Reporter, and Critic have provided their analysis (see previous work).
-You create the execution schedule and resource plan based on all previous findings.
-
-RESPONSIBILITIES:
-1. Create detailed project schedule with phases and milestones
-2. Estimate duration for each phase (Initiating, Planning, Implementing, Controlling, Closing)
-3. Estimate resources needed: people, hours, skills required
-4. Create weekly resourcing plan with resource allocation
-5. Identify resource constraints and dependencies
-6. Create text-based Gantt chart showing timeline
-7. Create resourcing table showing weekly allocation
-
-OUTPUT FORMAT:
-- Start with "EXECUTION SCHEDULE & RESOURCING PLAN" heading
-- Project timeline overview
-- Phase-by-phase breakdown with duration estimates
-- TEXT-BASED GANTT CHART (ASCII art timeline)
-- RESOURCING TABLE with weekly allocation:
-  | Week | Role | Hours | FTE | Task |
-  |------|------|-------|-----|------|
-  | 1-2  | PM   | 40    | 1.0 | Project Initiation |
-  etc.
-- Critical path analysis
-- Resource constraints and mitigation
-- Schedule risks
-
-Always include both the Gantt chart and resourcing table in ASCII format.
-Reference the PM, Researcher, Reporter, and Critic's work to inform scheduling.""",
+Start your response with: ## EXECUTION SCHEDULE & RESOURCING PLAN
+Always include BOTH the Gantt chart and the resourcing table.""",
 }
 
+AGENT_ORDER = ["pm", "researcher", "reporter", "critic", "scheduler"]
+
 # ============================================================================
-# SLACK BOT SETUP (Optional - only if valid tokens provided)
+# SLACK BOT (optional)
 # ============================================================================
 
-# Only initialize Slack bot if we have valid tokens (not placeholders)
 slack_app = None
-if SLACK_BOT_TOKEN and not SLACK_BOT_TOKEN.startswith("xoxb-placeholder"):
+
+if SLACK_ENABLED:
     try:
-        slack_app = App(token=SLACK_BOT_TOKEN)
+        slack_app = SlackApp(token=SLACK_BOT_TOKEN)
+        logger.info("Slack App initialised successfully")
+
+        @slack_app.event("app_mention")
+        def handle_mention(event, say):
+            text = event.get("text", "")
+            # Strip the @mention
+            import re
+            clean = re.sub(r"<@[A-Z0-9]+>", "", text).strip()
+            if not clean:
+                say("Hi! Mention me with a project brief to analyse.")
+                return
+            result = say("🤖 Analysing your project with the 5-agent team...")
+            _run_slack_pipeline(clean, say, result["ts"])
+
+        @slack_app.message("project brief")
+        def handle_project_brief(message, say):
+            text = message.get("text", "")
+            result = say("🤖 Analysing your project with the 5-agent team...")
+            _run_slack_pipeline(text, say, result["ts"])
+
     except Exception as e:
-        logger.warning(f"Failed to initialize Slack bot: {e}. Continuing with web-only mode.")
+        logger.warning(f"Slack init failed: {e} — running web-only")
+        slack_app = None
+        SLACK_ENABLED = False
 
 
-# Only register Slack handlers if bot is initialized
-if slack_app:
-    @slack_app.message("project-briefs")
-    def handle_project_brief(message, say, logger):
-        """Handle messages in #project-briefs channel using 5-agent pipeline."""
-        try:
-            brief_text = message.get("text", "")
-            if not brief_text:
-                return
-
-            # Post initial message indicating processing
-            result = say("🤖 Analyzing project brief with 5-agent team...\n_(This may take a moment)_")
-            thread_ts = result["ts"]
-
-            # Run 5-agent pipeline synchronously
-            run_agent_pipeline(brief_text, say, thread_ts)
-
-        except Exception as e:
-            logger.error(f"Error handling project brief: {e}")
-            say(f"❌ Error processing brief: {str(e)}")
-
-
-    @slack_app.message()
-    def handle_mention(message, say, logger):
-        """Handle @mentions to the bot in any channel."""
-        user_id = slack_app.client.auth_test()["user_id"]
-        if f"<@{user_id}>" not in message.get("text", ""):
-            return
-
-        try:
-            text = message.get("text", "").replace(f"<@{user_id}>", "").strip()
-
-            if not text:
-                say("Hi! Send me a project brief to analyze with our 5-agent team.")
-                return
-
-            # Post initial message
-            result = say("🤖 Analyzing with project team...\n_(This may take a moment)_")
-            thread_ts = result["ts"]
-
-            # Run 5-agent pipeline
-            run_agent_pipeline(text, say, thread_ts)
-
-        except Exception as e:
-            logger.error(f"Error handling mention: {e}")
-            say(f"❌ Error: {str(e)}")
-
-
-def run_agent_pipeline(brief: str, say, thread_ts: str):
-    """Execute 5-agent pipeline sequentially, streaming responses to Slack thread."""
+def _run_slack_pipeline(brief: str, say, thread_ts: str):
+    """Run 5-agent pipeline and post results to Slack thread."""
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
-    conversation_history = []
-
-    agents = ["pm", "researcher", "reporter", "critic", "scheduler"]
-    agent_names = {
+    history = []
+    names = {
         "pm": "Project Manager",
-        "researcher": "Researcher & Analyst",
+        "researcher": "Research Analyst",
         "reporter": "Report Creator",
-        "critic": "Critic & Reviewer",
-        "scheduler": "Scheduler",
+        "critic": "Critical Reviewer",
+        "scheduler": "Schedule Optimizer",
     }
 
-    for agent_id in agents:
-        logger.info(f"Running agent: {agent_id}")
-
-        # Build user message for this agent
-        if agent_id == "pm":
-            user_msg = f"Please analyze this project brief:\n\n{brief}"
-        else:
-            user_msg = f"Please continue the analysis based on all previous findings."
-
-        # Add to conversation history
-        conversation_history.append({
-            "role": "user",
-            "content": user_msg
-        })
-
-        # Call Claude with streaming
+    for agent_id in AGENT_ORDER:
+        user_msg = (
+            f"Please analyse this project brief:\n\n{brief}"
+            if agent_id == "pm"
+            else "Please continue the analysis based on all previous findings."
+        )
+        history.append({"role": "user", "content": user_msg})
         response_text = ""
+
         try:
             with client.messages.stream(
                 model="claude-sonnet-4-6",
-                max_tokens=2000,
+                max_tokens=3000,
                 system=AGENT_PROMPTS[agent_id],
-                messages=conversation_history
+                messages=history,
             ) as stream:
-                for text in stream.text_stream:
-                    response_text += text
-
+                for chunk in stream.text_stream:
+                    response_text += chunk
         except Exception as e:
-            logger.error(f"Error calling Claude for agent {agent_id}: {e}")
-            response_text = f"Error: {str(e)}"
+            response_text = f"Error: {e}"
 
-        # Add assistant response to history
-        conversation_history.append({
-            "role": "assistant",
-            "content": response_text
-        })
-
-        # Post to Slack as thread reply
-        agent_name = agent_names[agent_id]
-        formatted_response = f"*{agent_name}*\n\n{response_text}"
+        history.append({"role": "assistant", "content": response_text})
 
         try:
-            say(formatted_response, thread_ts=thread_ts)
+            say(f"*{names[agent_id]}*\n\n{response_text}", thread_ts=thread_ts)
         except Exception as e:
-            logger.error(f"Error posting to Slack: {e}")
-
-        logger.info(f"Agent {agent_id} completed")
+            logger.error(f"Slack post error for {agent_id}: {e}")
 
 
 # ============================================================================
-# FASTAPI WEB SERVER
+# FASTAPI WEB APP
 # ============================================================================
 
-web_app = FastAPI(title="Project Team Bot API", version="2.0.0")
-
-# Security
+web_app = FastAPI(title="Virtual Project Team", version="2.0.0")
 security = HTTPBearer()
 
 
-def verify_auth_token(credentials: HTTPAuthCredentials = Depends(security)) -> dict:
-    """Verify authentication token from Authorization header."""
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    """Verify session token from Authorization header."""
     token = credentials.credentials
-    # Simple token validation - just check if it looks like a valid session token
-    if not token or not token.startswith('session_token_'):
-        raise HTTPException(status_code=401, detail="Invalid token")
+    if not token or not token.startswith("session_token_"):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
     return {"token": token}
 
 
-@web_app.post("/auth/verify")
-async def verify_password(request_data: dict):
-    """Verify password and return access token.
-
-    Expected request body:
-    {
-        "password": "PM888"
-    }
-    """
-    provided_password = request_data.get("password", "")
-
-    # Verify password matches
-    if provided_password != PASSWORD:
-        raise HTTPException(status_code=401, detail="Invalid password")
-
-    # Return simple token (just use the password as token for simplicity)
-    return {
-        "access_token": "session_token_" + str(datetime.utcnow().timestamp()),
-        "token_type": "bearer",
-        "expires_in": 86400
-    }
-
-
-async def stream_agent_response(
-    brief: str,
-    agent_id: str,
-    conversation_history: list,
-) -> AsyncGenerator[str, None]:
-    """Stream response from a single agent using async generator."""
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
-
-    # Determine user message
-    if agent_id == "pm":
-        user_msg = f"Please analyze this project brief:\n\n{brief}"
-    else:
-        user_msg = f"Please continue the analysis based on all previous findings."
-
-    # Add user message to history
-    conversation_history.append({
-        "role": "user",
-        "content": user_msg
-    })
-
-    # Stream start event
-    yield f"data: {json.dumps({'agent_id': agent_id, 'type': 'start'})}\n\n"
-
-    response_text = ""
-    try:
-        with client.messages.stream(
-            model="claude-sonnet-4-6",
-            max_tokens=2000,
-            system=AGENT_PROMPTS[agent_id],
-            messages=conversation_history
-        ) as stream:
-            for text in stream.text_stream:
-                response_text += text
-                # Stream content blocks
-                yield f"data: {json.dumps({'agent_id': agent_id, 'type': 'content_block', 'content': text})}\n\n"
-
-    except Exception as e:
-        logger.error(f"Error streaming agent {agent_id}: {e}")
-        yield f"data: {json.dumps({'agent_id': agent_id, 'type': 'error', 'error': str(e)})}\n\n"
-
-    # Add response to history
-    conversation_history.append({
-        "role": "assistant",
-        "content": response_text
-    })
-
-    # Stream completion event
-    yield f"data: {json.dumps({'agent_id': agent_id, 'type': 'message_stop', 'is_final': agent_id == 'scheduler'})}\n\n"
-
-
-async def run_agent_pipeline_async(brief: str) -> AsyncGenerator[str, None]:
-    """Run 5-agent pipeline with async streaming."""
-    agents = ["pm", "researcher", "reporter", "critic", "scheduler"]
-    conversation_history = []
-
-    for agent_id in agents:
-        logger.info(f"Streaming agent: {agent_id}")
-        async for event in stream_agent_response(brief, agent_id, conversation_history):
-            yield event
-
-
-@web_app.post("/api/analyze")
-async def analyze_brief(
-    request_data: dict,
-    _: dict = Depends(verify_auth_token)
-) -> StreamingResponse:
-    """Analyze a project brief using 5-agent pipeline with streaming.
-
-    Expected request body:
-    {
-        "brief": "Your project brief text here"
-    }
-
-    Returns: Server-Sent Events stream with NDJSON events
-    """
-    brief = request_data.get("brief", "").strip()
-
-    if not brief:
-        raise HTTPException(status_code=400, detail="brief is required")
-
-    if not ANTHROPIC_API_KEY:
-        raise HTTPException(
-            status_code=500,
-            detail="ANTHROPIC_API_KEY not configured"
-        )
-
-    return StreamingResponse(
-        run_agent_pipeline_async(brief),
-        media_type="text/event-stream"
-    )
+@web_app.get("/health")
+async def health():
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
 @web_app.get("/")
-async def serve_index():
-    """Serve index.html from static files directory."""
-    from fastapi.responses import FileResponse
+async def serve_root():
+    """Serve the main web app HTML file."""
+    # Look for index.html alongside app.py (root of repo)
+    here = os.path.dirname(os.path.abspath(__file__))
+    for candidate in ["index.html", "static/index.html"]:
+        path = os.path.join(here, candidate)
+        if os.path.exists(path):
+            logger.info(f"Serving {path}")
+            return FileResponse(path, media_type="text/html")
 
-    index_path = os.path.join(
-        os.path.dirname(__file__),
-        "static",
-        "index.html"
+    # Fallback - shouldn't happen in production
+    return {
+        "message": "Virtual Project Team API v2.0",
+        "note": "index.html not found - check deployment",
+        "endpoints": {"auth": "POST /auth/verify", "analyze": "POST /api/analyze"},
+    }
+
+
+@web_app.post("/auth/verify")
+async def verify_password(body: dict):
+    """Verify shared password and return session token."""
+    provided = body.get("password", "")
+    if provided != PASSWORD:
+        raise HTTPException(status_code=401, detail="Incorrect password")
+    token = f"session_token_{datetime.utcnow().timestamp()}"
+    return {"access_token": token, "token_type": "bearer"}
+
+
+async def _stream_pipeline(brief: str) -> AsyncGenerator[str, None]:
+    """Stream 5-agent pipeline as NDJSON lines."""
+    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    history = []
+
+    for agent_id in AGENT_ORDER:
+        # Signal agent starting
+        yield json.dumps({"agent": agent_id, "status": "speaking"}) + "\n"
+
+        user_msg = (
+            f"Please analyse this project brief:\n\n{brief}"
+            if agent_id == "pm"
+            else "Please continue the analysis based on all previous findings."
+        )
+        history.append({"role": "user", "content": user_msg})
+        response_text = ""
+
+        try:
+            with client.messages.stream(
+                model="claude-sonnet-4-6",
+                max_tokens=3000,
+                system=AGENT_PROMPTS[agent_id],
+                messages=history,
+            ) as stream:
+                for chunk in stream.text_stream:
+                    response_text += chunk
+                    yield json.dumps({"agent": agent_id, "content": chunk}) + "\n"
+
+        except Exception as e:
+            logger.error(f"Stream error for {agent_id}: {e}")
+            yield json.dumps({"agent": agent_id, "content": f"\n\n[Error: {e}]"}) + "\n"
+
+        history.append({"role": "assistant", "content": response_text})
+
+        # Signal agent complete
+        yield json.dumps({"agent": agent_id, "status": "complete"}) + "\n"
+
+
+@web_app.post("/api/analyze")
+async def analyze(
+    body: dict,
+    _: dict = Depends(verify_token),
+) -> StreamingResponse:
+    """Run 5-agent analysis and stream results as NDJSON."""
+    brief = body.get("brief", "").strip()
+    if not brief:
+        raise HTTPException(status_code=400, detail="brief is required")
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
+
+    return StreamingResponse(
+        _stream_pipeline(brief),
+        media_type="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no"},  # Disable Nginx buffering for streaming
     )
 
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-
-    return {
-        "message": "Project Team Bot API v2.0",
-        "endpoints": {
-            "auth": "POST /auth/verify",
-            "analyze": "POST /api/analyze",
-            "docs": "/docs"
-        }
-    }
-
-
-@web_app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {
-        "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
 
 # ============================================================================
-# BACKGROUND THREAD SETUP
+# SLACK SOCKET MODE (background thread)
 # ============================================================================
 
-def run_socket_mode():
-    """Run Slack Socket Mode in background thread."""
+def _run_slack_socket_mode():
+    """Start Slack socket mode in background thread."""
     if not slack_app:
-        logger.info("Slack bot not initialized. Running in web-only mode.")
+        logger.info("Slack not configured - skipping socket mode")
         return
-
-    if not SLACK_BOT_TOKEN or not SLACK_APP_TOKEN:
-        logger.warning("Slack credentials not configured. Slack bot disabled.")
-        return
-
-    handler = SocketModeHandler(slack_app, SLACK_APP_TOKEN)
-    logger.info("Starting Slack Socket Mode handler...")
-    handler.start()
-
-
-def run_web_server():
-    """Run FastAPI web server."""
-    logger.info("Starting FastAPI web server on http://0.0.0.0:8000")
-    uvicorn.run(
-        web_app,
-        host="0.0.0.0",
-        port=8000,
-        log_level="info"
-    )
+    try:
+        handler = SocketModeHandler(slack_app, SLACK_APP_TOKEN)
+        logger.info("Starting Slack socket mode...")
+        handler.start()
+    except Exception as e:
+        logger.error(f"Slack socket mode error: {e}")
 
 
 # ============================================================================
-# MAIN ENTRY POINT
+# ENTRY POINT (used when running python app.py directly)
 # ============================================================================
 
 if __name__ == "__main__":
-    # Start Slack bot in background thread
-    slack_thread = threading.Thread(target=run_socket_mode, daemon=True)
-    slack_thread.start()
-    logger.info("Slack bot thread started")
+    port = int(os.getenv("PORT", 8000))
 
-    # Start web server in main thread
-    run_web_server()
+    if SLACK_ENABLED and slack_app:
+        t = threading.Thread(target=_run_slack_socket_mode, daemon=True)
+        t.start()
+
+    logger.info(f"Starting web server on port {port}")
+    uvicorn.run(web_app, host="0.0.0.0", port=port, log_level="info")
