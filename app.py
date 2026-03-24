@@ -104,7 +104,7 @@ Your output must cover:
 Start your response with: ## RESEARCH & ANALYSIS
 Reference the PM's charter throughout.""",
 
-    "reporter": """You are an expert Report Creator specialising in ISO 21500:2021 documentation.
+    "report": """You are an expert Report Creator specialising in ISO 21500:2021 documentation.
 You are the THIRD agent. Synthesise the PM and Researcher outputs into a formal project document.
 
 Your output must cover:
@@ -157,7 +157,7 @@ Start your response with: ## EXECUTION SCHEDULE & RESOURCING PLAN
 Always include BOTH the Gantt chart and the resourcing table.""",
 }
 
-AGENT_ORDER = ["pm", "researcher", "reporter", "critic", "scheduler"]
+AGENT_ORDER = ["pm", "researcher", "report", "critic", "scheduler"]
 
 # ============================================================================
 # SLACK BOT (optional)
@@ -201,7 +201,7 @@ def _run_slack_pipeline(brief: str, say, thread_ts: str):
     names = {
         "pm": "Project Manager",
         "researcher": "Research Analyst",
-        "reporter": "Report Creator",
+        "report": "Report Creator",
         "critic": "Critical Reviewer",
         "scheduler": "Schedule Optimizer",
     }
