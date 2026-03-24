@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Virtual Project Team</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React & ReactDOM -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel Standalone (JSX in browser) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Marked.js for markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <!-- html2pdf.js for PDF export -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      background: #f8fafc;
+    }
+
+    /* ── Modal ── */
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(15,23,42,0.8);
+      display: flex; align-items: center; justify-content: center;
+      backdrop-filter: blur(2px); z-index: 50;
+    }
+    .modal-card {
+      background: white; border-radius: 12px;
+      padding: 48px 40px; max-width: 400px; width: 90%;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      animation: slideUp .3s ease-out;
+    }
+    @keyframes slideUp {
+      from { opacity:0; transform:translateY(20px); }
+      to   { opacity:1; transform:translateY(0); }
+    }
+
+    /* ── Header ── */
+    .header-bar {
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      color: white; padding: 20px 32px;
+      display: flex; justify-content: space-between; align-items: center;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    .header-title { font-size: 24px; font-weight: 700; letter-spacing: -.5px; }
+    .iso-badge {
+      background: rgba(255,255,255,0.15); padding: 4px 12px;
+      border-radius: 6px; font-size: 11px; font-weight: 600;
+      letter-spacing: .5px; border: 1px solid rgba(255,255,255,0.2);
+    }
+
+    /* ── Brief input ── */
+    .brief-section {
+      background: white; padding: 32px; margin: 24px 32px;
+      border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+    .brief-textarea {
+      width: 100%; min-height: 100px; padding: 16px;
+      border: 2px solid #e2e8f0; border-radius: 8px;
+      font-size: 14px; font-family: inherit; resize: vertical;
+      transition: all .2s; line-height: 1.6;
+    }
+    .brief-textarea:focus {
+      outline: none; border-color: #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
+    }
+
+    /* ── Agent grid ── */
+    .agent-grid {
+      display: grid; grid-template-columns: repeat(2,1fr);
+      gap: 20px; padding: 32px; max-width: 1400px;
+    }
+    .agent-grid > :last-child {
+      grid-column: 1 / -1; width: 50%; margin: 0 auto;
+    }
+    @media (max-width: 1024px) {
+      .agent-grid { grid-template-columns: 1fr; padding: 20px; }
+      .agent-grid > :last-child { grid-column: auto; width: 100%; }
+    }
+
+    /* ── Agent cards ── */
+    .agent-card {
+      background: white; border-radius: 12px; padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      display: flex; flex-direction: column; align-items: center;
+      transition: all .3s; position: relative; min-height: 420px;
+    }
+    .agent-card.idle   { opacity: 0.6; }
+    .agent-card.speaking {
+      animation: pulse 2s cubic-bezier(.4,0,.6,1) infinite;
+      border: 2px solid #3b82f6;
+      box-shadow: 0 0 20px rgba(59,130,246,0.3), 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .agent-card.complete {
+      border: 2px solid #22c55e;
+      background: linear-gradient(135deg, #f0fdf4 0%, white 100%);
+    }
+    @keyframes pulse {
+      0%,100% { box-shadow: 0 0 20px rgba(59,130,246,0.3), 0 2px 8px rgba(0,0,0,0.06); }
+      50%     { box-shadow: 0 0 30px rgba(59,130,246,0.5), 0 2px 8px rgba(0,0,0,0.06); }
+    }
+
+    /* ── Avatars ── */
+    .avatar {
+      width: 72px; height: 72px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 24px; font-weight: 700; color: white;
+      margin-bottom: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    .avatar.pm         { background: linear-gradient(135deg,#22c55e,#16a34a); }
+    .avatar.researcher  { background: linear-gradient(135deg,#3b82f6,#2563eb); }
+    .avatar.report      { background: linear-gradient(135deg,#f59e0b,#d97706); }
+    .avatar.critic      { background: linear-gradient(135deg,#ef4444,#dc2626); }
+    .avatar.scheduler   { background: linear-gradient(135deg,#8b5cf6,#7c3aed); }
+
+    /* ── Role badges ── */
+    .role-badge {
+      display: inline-block; padding: 4px 12px; border-radius: 20px;
+      font-size: 11px; font-weight: 700; letter-spacing: .5px;
+      margin-bottom: 8px; text-transform: uppercase;
+    }
+    .role-badge.pm         { background:#dcfce7; color:#166534; }
+    .role-badge.researcher { background:#dbeafe; color:#1e40af; }
+    .role-badge.report     { background:#fef3c7; color:#92400e; }
+    .role-badge.critic     { background:#fee2e2; color:#991b1b; }
+    .role-badge.scheduler  { background:#ede9fe; color:#5b21b6; }
+
+    .agent-name {
+      font-size: 16px; font-weight: 700; color: #1e293b;
+      margin-bottom: 12px; text-align: center;
+    }
+
+    /* ── Response container with markdown support ── */
+    .response-container {
+      width: 100%; flex: 1; overflow-y: auto;
+      margin-top: 12px; padding: 12px;
+      background: #f8fafc; border-radius: 8px;
+      border: 1px solid #e2e8f0;
+      font-size: 13px; line-height: 1.6; color: #334155;
+    }
+    .response-container:empty::before {
+      content: attr(data-placeholder); color: #cbd5e1;
+    }
+
+    /* ── Markdown inside response containers ── */
+    .md-content h2 { font-size: 16px; font-weight: 700; color: #0f172a; margin: 16px 0 8px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+    .md-content h3 { font-size: 14px; font-weight: 700; color: #1e293b; margin: 12px 0 6px 0; }
+    .md-content h4 { font-size: 13px; font-weight: 700; color: #334155; margin: 10px 0 4px 0; }
+    .md-content p  { margin: 6px 0; }
+    .md-content ul, .md-content ol { margin: 6px 0 6px 20px; }
+    .md-content li { margin: 3px 0; }
+    .md-content strong { font-weight: 700; color: #0f172a; }
+    .md-content em { font-style: italic; }
+    .md-content code { background: #e2e8f0; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+    .md-content pre { background: #1e293b; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0; font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
+    .md-content table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+    .md-content th { background: #e2e8f0; font-weight: 700; text-align: left; padding: 6px 8px; border: 1px solid #cbd5e1; }
+    .md-content td { padding: 5px 8px; border: 1px solid #e2e8f0; }
+    .md-content tr:nth-child(even) { background: #f1f5f9; }
+    .md-content blockquote { border-left: 3px solid #3b82f6; padding-left: 12px; margin: 8px 0; color: #64748b; font-style: italic; }
+    .md-content hr { border: none; border-top: 1px solid #e2e8f0; margin: 12px 0; }
+
+    /* ── Checkmark ── */
+    .checkmark {
+      position: absolute; top: 12px; right: 12px;
+      width: 24px; height: 24px; background: #22c55e;
+      border-radius: 50%; display: flex; align-items: center;
+      justify-content: center; color: white; font-size: 14px;
+      animation: popIn .3s ease-out;
+    }
+    @keyframes popIn { from { transform:scale(.5); opacity:0; } to { transform:scale(1); opacity:1; } }
+
+    /* ── Action bar ── */
+    .action-bar {
+      background: white; padding: 24px 32px; display: flex;
+      gap: 12px; justify-content: flex-start;
+      box-shadow: 0 -2px 8px rgba(0,0,0,0.04); flex-wrap: wrap;
+    }
+
+    /* ── Buttons ── */
+    .btn {
+      padding: 10px 24px; border-radius: 8px; border: none;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      transition: all .2s; display: inline-flex; align-items: center; gap: 8px;
+    }
+    .btn-primary { background: #3b82f6; color: white; }
+    .btn-primary:hover { background: #2563eb; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59,130,246,0.3); }
+    .btn-primary:disabled { background: #cbd5e1; cursor: not-allowed; transform: none; box-shadow: none; }
+    .btn-secondary { background: #e2e8f0; color: #334155; }
+    .btn-secondary:hover { background: #cbd5e1; }
+
+    /* ── Misc ── */
+    .spinner {
+      display: inline-block; width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,0.3); border-top-color: white;
+      border-radius: 50%; animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-message {
+      background: #fee2e2; color: #991b1b; padding: 12px 16px;
+      border-radius: 8px; border-left: 4px solid #dc2626;
+      margin: 12px 0; font-size: 13px; line-height: 1.5;
+    }
+    .success-message {
+      background: #dcfce7; color: #166534; padding: 12px 16px;
+      border-radius: 8px; border-left: 4px solid #22c55e;
+      margin: 12px 0; font-size: 13px;
+    }
+
+    .typing-cursor {
+      display: inline-block; width: 2px; height: 1em;
+      background: #334155; margin-left: 2px;
+      animation: blink .7s infinite;
+    }
+    @keyframes blink { 0%,49%,100% { opacity:1; } 50%,99% { opacity:0; } }
+
+    /* ── PDF export styles ── */
+    .pdf-export {
+      padding: 48px; background: white;
+      font-family: 'Segoe UI', Roboto, sans-serif;
+      color: #1e293b; line-height: 1.6;
+    }
+    .pdf-title { font-size: 32px; font-weight: 800; color: #0f172a; margin-bottom: 12px; letter-spacing: -.5px; }
+    .pdf-date { font-size: 12px; color: #64748b; margin-bottom: 32px; font-weight: 500; }
+
+    .pdf-agent-section { margin-bottom: 32px; padding-bottom: 24px; page-break-inside: avoid; }
+    .pdf-agent-header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+    .pdf-agent-avatar {
+      width: 52px; height: 52px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-weight: 700; font-size: 20px;
+      flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .pdf-agent-name { font-size: 17px; font-weight: 700; color: #0f172a; margin-bottom: 2px; }
+
+    .pdf-agent-content {
+      background: #f8fafc; padding: 18px; border-radius: 6px;
+      font-size: 12.5px; line-height: 1.8; color: #334155;
+      border-left: 5px solid; box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .pdf-agent-content.pm         { border-color: #22c55e; }
+    .pdf-agent-content.researcher { border-color: #3b82f6; }
+    .pdf-agent-content.report     { border-color: #f59e0b; }
+    .pdf-agent-content.critic     { border-color: #ef4444; }
+    .pdf-agent-content.scheduler  { border-color: #8b5cf6; }
+
+    /* Markdown inside PDF */
+    .pdf-agent-content h2 { font-size: 15px; font-weight: 700; color: #0f172a; margin: 14px 0 6px 0; }
+    .pdf-agent-content h3 { font-size: 13px; font-weight: 700; color: #1e293b; margin: 10px 0 4px 0; }
+    .pdf-agent-content p  { margin: 5px 0; }
+    .pdf-agent-content ul, .pdf-agent-content ol { margin: 5px 0 5px 18px; }
+    .pdf-agent-content li { margin: 2px 0; }
+    .pdf-agent-content strong { font-weight: 700; }
+    .pdf-agent-content table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 11px; }
+    .pdf-agent-content th { background: #e2e8f0; font-weight: 700; text-align: left; padding: 4px 6px; border: 1px solid #cbd5e1; }
+    .pdf-agent-content td { padding: 4px 6px; border: 1px solid #e2e8f0; }
+    .pdf-agent-content tr:nth-child(even) { background: #f1f5f9; }
+    .pdf-agent-content pre { background: #1e293b; color: #e2e8f0; padding: 10px; border-radius: 4px; font-size: 10px; white-space: pre-wrap; margin: 6px 0; }
+    .pdf-agent-content code { background: #e2e8f0; padding: 1px 3px; border-radius: 2px; font-size: 11px; }
+    .pdf-agent-content hr { border: none; border-top: 1px solid #e2e8f0; margin: 10px 0; }
+
+    @media print {
+      .header-bar, .brief-section, .action-bar { display: none; }
+      .pdf-agent-section { page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // Configure marked for safe rendering
+    marked.setOptions({ breaks: true, gfm: true });
+
+    // Agent configuration — IDs must match backend AGENT_ORDER
+    const AGENTS = [
+      { id: 'pm',         name: 'Project Manager',    role: 'PM',        initials: 'PM', color: 'pm' },
+      { id: 'researcher', name: 'Research Analyst',    role: 'Researcher',initials: 'RA', color: 'researcher' },
+      { id: 'report',     name: 'Report Creator',      role: 'Report',    initials: 'RC', color: 'report' },
+      { id: 'critic',     name: 'Critical Reviewer',   role: 'Critic',    initials: 'CR', color: 'critic' },
+      { id: 'scheduler',  name: 'Schedule Optimizer',  role: 'Scheduler', initials: 'SO', color: 'scheduler' },
+    ];
+
+    // Render markdown to HTML safely
+    function renderMarkdown(text) {
+      if (!text) return '';
+      try {
+        return marked.parse(text);
+      } catch (e) {
+        return text;
+      }
+    }
+
+    // ── Password Modal ──────────────────────────────────────────────
+    function PasswordModal({ onAuth }) {
+      const [password, setPassword] = useState('');
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState('');
+
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+        setError('');
+        setLoading(true);
+        try {
+          const res = await fetch('/auth/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password }),
+          });
+          if (!res.ok) throw new Error('Bad password');
+          const data = await res.json();
+          if (data.access_token) {
+            localStorage.setItem('auth_token', data.access_token);
+            onAuth(true);
+          }
+        } catch {
+          setError('Invalid password. Please try again.');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      return (
+        <div className="modal-overlay">
+          <div className="modal-card">
+            <h1 style={{ fontSize: '28px', fontWeight: '700', color: '#1e293b', marginBottom: '12px' }}>
+              Virtual Project Team
+            </h1>
+            <p style={{ fontSize: '13px', color: '#64748b', marginBottom: '32px' }}>
+              AI-powered ISO 21500 project analysis
+            </p>
+            <form onSubmit={handleSubmit}>
+              <input
+                type="password"
+                placeholder="Enter team password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={loading}
+                style={{
+                  width: '100%', padding: '12px 16px',
+                  border: '2px solid #e2e8f0', borderRadius: '8px',
+                  fontSize: '14px', marginBottom: '16px',
+                  outline: 'none', transition: 'all .2s',
+                }}
+                onFocus={(e) => (e.target.style.borderColor = '#3b82f6')}
+                onBlur={(e)  => (e.target.style.borderColor = '#e2e8f0')}
+              />
+              {error && <div className="error-message">{error}</div>}
+              <button type="submit" disabled={!password || loading}
+                className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}>
+                {loading ? <><span className="spinner"></span> Verifying...</> : 'Sign In'}
+              </button>
+            </form>
+            <p style={{ fontSize: '12px', color: '#94a3b8', marginTop: '20px', textAlign: 'center' }}>
+              Shared team password: PM888
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Agent Card ───────────────────────────────────────────────────
+    function AgentCard({ agent, response, status }) {
+      const containerRef = useRef(null);
+
+      useEffect(() => {
+        if (containerRef.current) {
+          containerRef.current.scrollTop = containerRef.current.scrollHeight;
+        }
+      }, [response]);
+
+      const cls = status === 'idle' ? 'idle' : status === 'speaking' ? 'speaking' : 'complete';
+
+      return (
+        <div className={`agent-card ${cls}`}>
+          {status === 'complete' && <div className="checkmark">✓</div>}
+          <div className={`avatar ${agent.color}`}>{agent.initials}</div>
+          <div className={`role-badge ${agent.color}`}>{agent.role}</div>
+          <div className="agent-name">{agent.name}</div>
+          <div className="response-container" ref={containerRef}
+               data-placeholder={status === 'idle' ? 'Waiting to analyse...' : ''}>
+            {response && (
+              <div className="md-content"
+                   dangerouslySetInnerHTML={{ __html: renderMarkdown(response) }} />
+            )}
+            {status === 'speaking' && <span className="typing-cursor"></span>}
+          </div>
+        </div>
+      );
+    }
+
+    // ── Main App ─────────────────────────────────────────────────────
+    function App() {
+      const [authenticated, setAuthenticated] = useState(false);
+      const [brief, setBrief]       = useState('');
+      const [responses, setResponses] = useState({});
+      const [statuses, setStatuses]   = useState({});
+      const [analyzing, setAnalyzing] = useState(false);
+      const [error, setError]         = useState('');
+      const [success, setSuccess]     = useState('');
+
+      // Check for existing session
+      useEffect(() => {
+        const token = localStorage.getItem('auth_token');
+        if (token) setAuthenticated(true);
+      }, []);
+
+      const initStatuses = () => {
+        const s = {};
+        AGENTS.forEach(a => (s[a.id] = 'idle'));
+        setStatuses(s);
+      };
+
+      // ── Run Analysis ──
+      const handleAnalyze = async () => {
+        if (!brief.trim()) {
+          setError('Please enter a project brief');
+          setTimeout(() => setError(''), 3000);
+          return;
+        }
+
+        setError(''); setSuccess('');
+        setAnalyzing(true);
+        initStatuses();
+        setResponses({});
+
+        try {
+          const res = await fetch('/api/analyze', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+            },
+            body: JSON.stringify({ brief }),
+          });
+
+          if (!res.ok) throw new Error(`Analysis failed (${res.status})`);
+
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              try {
+                const data = JSON.parse(line);
+                if (data.agent && data.status) {
+                  setStatuses(prev => ({ ...prev, [data.agent]: data.status }));
+                }
+                if (data.agent && data.content) {
+                  setResponses(prev => ({
+                    ...prev,
+                    [data.agent]: (prev[data.agent] || '') + data.content,
+                  }));
+                }
+              } catch (e) {
+                console.warn('Parse skip:', line);
+              }
+            }
+          }
+
+          setAnalyzing(false);
+          setSuccess('Analysis complete!');
+          setTimeout(() => setSuccess(''), 3000);
+          AGENTS.forEach(a => setStatuses(prev => ({ ...prev, [a.id]: 'complete' })));
+
+        } catch (err) {
+          setAnalyzing(false);
+          setError(`Failed: ${err.message}`);
+          console.error(err);
+        }
+      };
+
+      // ── Export PDF ──
+      const handleExportPDF = () => {
+        const el = document.getElementById('pdf-content');
+        // Must be visible for html2pdf to render
+        el.style.display = 'block';
+        el.style.position = 'absolute';
+        el.style.left = '-9999px';
+
+        const timestamp = new Date().toISOString().split('T')[0];
+
+        html2pdf()
+          .set({
+            margin: [12, 12, 12, 12],
+            filename: `Project_Analysis_${timestamp}.pdf`,
+            image: { type: 'jpeg', quality: 0.99 },
+            html2canvas: { scale: 3, useCORS: true, backgroundColor: '#ffffff' },
+            jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4', compress: true },
+            pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+          })
+          .from(el)
+          .save()
+          .then(() => {
+            el.style.display = 'none';
+            el.style.position = '';
+            el.style.left = '';
+            setSuccess('PDF exported!');
+            setTimeout(() => setSuccess(''), 2000);
+          })
+          .catch((e) => {
+            el.style.display = 'none';
+            el.style.position = '';
+            el.style.left = '';
+            setError('PDF export failed');
+            console.error(e);
+          });
+      };
+
+      const handleNewBrief = () => {
+        setBrief(''); setResponses({}); initStatuses();
+        setError(''); setSuccess('');
+      };
+
+      const hasResults = Object.values(responses).some(r => r && r.length > 0);
+      const allDone = hasResults && AGENTS.every(a => statuses[a.id] === 'complete');
+
+      if (!authenticated) return <PasswordModal onAuth={setAuthenticated} />;
+
+      return (
+        <div style={{ minHeight: '100vh', background: '#f8fafc' }}>
+          {/* Header */}
+          <div className="header-bar">
+            <div>
+              <div className="header-title">Virtual Project Team</div>
+              <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.7)', marginTop: '4px' }}>
+                AI-Powered Project Analysis
+              </div>
+            </div>
+            <div className="iso-badge">ISO 21500:2021</div>
+          </div>
+
+          {/* Brief Input */}
+          <div className="brief-section">
+            <label style={{ display: 'block', marginBottom: '12px', fontSize: '14px', fontWeight: '600', color: '#1e293b' }}>
+              Project Brief
+            </label>
+            <textarea className="brief-textarea" value={brief}
+              placeholder="Describe your project — goals, timeline, team size, challenges, budget, constraints..."
+              onChange={(e) => setBrief(e.target.value)} disabled={analyzing} />
+            {error   && <div className="error-message">{error}</div>}
+            {success && <div className="success-message">✓ {success}</div>}
+            <button className="btn btn-primary" onClick={handleAnalyze}
+              disabled={analyzing || !brief.trim()} style={{ marginTop: '16px' }}>
+              {analyzing
+                ? <><span className="spinner"></span> Analysing...</>
+                : '→ Analyse with Team'}
+            </button>
+          </div>
+
+          {/* Agent Grid */}
+          <div className="agent-grid">
+            {AGENTS.map(agent => (
+              <AgentCard key={agent.id} agent={agent}
+                response={responses[agent.id] || ''}
+                status={statuses[agent.id] || 'idle'} />
+            ))}
+          </div>
+
+          {/* Action Bar */}
+          <div className="action-bar">
+            <button className="btn btn-primary" onClick={handleExportPDF}
+              disabled={!allDone || analyzing}>
+              Export PDF
+            </button>
+            <button className="btn btn-secondary" onClick={handleNewBrief}
+              disabled={analyzing}>
+              + New Brief
+            </button>
+          </div>
+
+          {/* Hidden PDF Content (made visible during export) */}
+          <div id="pdf-content" style={{ display: 'none' }}>
+            <div className="pdf-export">
+              {/* Header */}
+              <div style={{ marginBottom: '40px', paddingBottom: '20px', borderBottom: '2px solid #e2e8f0' }}>
+                <div className="pdf-title">Virtual Project Team Analysis</div>
+                <div style={{ fontSize: '14px', color: '#64748b', marginTop: '8px', marginBottom: '16px' }}>
+                  ISO 21500:2021 Compliant Project Management Framework
+                </div>
+                <div className="pdf-date">
+                  Generated: {new Date().toLocaleDateString('en-US', {
+                    year: 'numeric', month: 'long', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit',
+                  })}
+                </div>
+              </div>
+
+              {/* Brief */}
+              {brief && (
+                <div style={{ marginBottom: '32px', pageBreakInside: 'avoid' }}>
+                  <div style={{ fontSize: '18px', fontWeight: '700', color: '#1e293b', marginBottom: '12px' }}>
+                    Project Brief
+                  </div>
+                  <div style={{ background: '#f1f5f9', padding: '16px', borderRadius: '8px', fontSize: '13px', lineHeight: '1.7', color: '#334155', whiteSpace: 'pre-wrap' }}>
+                    {brief}
+                  </div>
+                </div>
+              )}
+
+              {/* Section heading */}
+              <div style={{ fontSize: '18px', fontWeight: '700', color: '#1e293b', marginBottom: '24px' }}>
+                Team Analysis
+              </div>
+
+              {/* Agent outputs */}
+              {AGENTS.map(agent => (
+                <div key={agent.id} className="pdf-agent-section">
+                  <div className="pdf-agent-header">
+                    <div className="pdf-agent-avatar" style={{
+                      background: agent.color === 'pm' ? '#22c55e'
+                        : agent.color === 'researcher' ? '#3b82f6'
+                        : agent.color === 'report' ? '#f59e0b'
+                        : agent.color === 'critic' ? '#ef4444' : '#8b5cf6',
+                    }}>
+                      {agent.initials}
+                    </div>
+                    <div>
+                      <div className="pdf-agent-name">{agent.name}</div>
+                      <div style={{ fontSize: '12px', color: '#64748b' }}>{agent.role}</div>
+                    </div>
+                  </div>
+                  <div className={`pdf-agent-content ${agent.color}`}
+                       dangerouslySetInnerHTML={{
+                         __html: responses[agent.id]
+                           ? renderMarkdown(responses[agent.id])
+                           : '<em>Analysis pending...</em>'
+                       }} />
+                </div>
+              ))}
+
+              {/* Footer */}
+              <div style={{ marginTop: '40px', paddingTop: '20px', borderTop: '2px solid #e2e8f0', fontSize: '11px', color: '#94a3b8', textAlign: 'center' }}>
+                <div>Generated by Virtual Project Team — AI-Powered Analysis</div>
+                <div style={{ marginTop: '4px' }}>ISO 21500:2021 Project Management Standards</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
