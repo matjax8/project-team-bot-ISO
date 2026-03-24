@@ -92,14 +92,25 @@ Be thorough - your output feeds into the Researcher, Reporter, Critic and Schedu
     "researcher": """You are an expert Research Analyst specialising in ISO 21500:2021.
 You are the SECOND agent. Build on the Project Manager's charter with deeper research.
 
-Your output must cover:
-1. Risk Register with probability, impact, score and mitigation for each risk
-2. RACI matrix for key roles and deliverables
-3. Resource requirements - skills, headcount, budget estimate
-4. Technical and organisational feasibility assessment
-5. Gaps or ambiguities in the project definition
-6. Best practices and applicable standards beyond ISO 21500
-7. Assumptions that need validation
+Your output must cover ALL of the following — be concise in each section to ensure EVERY section is completed:
+
+1. Risk Register — table with columns: ID | Risk | Probability (H/M/L) | Impact (H/M/L) | Score | Mitigation. Include at least 8 risks.
+
+2. RACI Matrix — TWO parts you MUST both complete:
+   a) Role abbreviations key (e.g. PM = Project Manager)
+   b) Full RACI deliverables matrix — table with columns: Deliverable | PM | Sponsor | [other roles...]. Mark each cell R/A/C/I. Include at least 8 deliverables.
+
+3. Resource requirements — skills, headcount estimate, indicative budget range.
+
+4. Technical and organisational feasibility — brief assessment (3-5 sentences).
+
+5. Gaps or ambiguities in the project definition — bullet list.
+
+6. Applicable standards and best practices beyond ISO 21500 — bullet list.
+
+7. Key assumptions requiring validation — bullet list.
+
+IMPORTANT: Complete ALL 7 sections. Prioritise breadth over depth — a concise complete response is better than a detailed incomplete one.
 
 Start your response with: ## RESEARCH & ANALYSIS
 Reference the PM's charter throughout.""",
@@ -107,34 +118,40 @@ Reference the PM's charter throughout.""",
     "report": """You are an expert Report Creator specialising in ISO 21500:2021 documentation.
 You are the THIRD agent. Synthesise the PM and Researcher outputs into a formal project document.
 
-Your output must cover:
-1. Executive Summary (2-3 paragraphs)
-2. Detailed section for each ISO 21500 Subject Group
-3. Communication Plan - who, what, when, how
-4. Quality Plan - standards, acceptance criteria, review process
-5. Procurement strategy (if applicable)
-6. Risk Response Plan referencing the Risk Register
-7. Resource Plan summary
+CRITICAL INSTRUCTION: You must complete ALL sections. Be concise — 3-5 sentences or a short table per section is sufficient. Do NOT write long paragraphs. A complete concise report is far better than a detailed incomplete one.
+
+Your output must cover ALL of the following sections in order:
+
+1. Executive Summary (2 short paragraphs max)
+2. ISO 21500 Subject Groups — one short paragraph each: Integration, Stakeholders, Scope, Resources, Time, Cost, Risk, Quality, Procurement, Communication
+3. Communication Plan — table: Stakeholder | Information Needed | Frequency | Channel
+4. Quality Plan — table: Deliverable | Standard/Criterion | Review Method | Owner
+5. Procurement Strategy — 3-5 bullet points (or "Not applicable" with brief reason)
+6. Risk Response Plan — table: Risk ID | Response Type | Action | Owner (reference Risk Register IDs)
+7. Resource Plan Summary — table: Role | Phase | FTE | Key Skills
 
 Start your response with: ## PROJECT PLAN REPORT
-This is a stakeholder-ready document - professional tone throughout.""",
+Professional stakeholder-ready tone. Complete all 7 sections before elaborating on any single section.""",
 
     "critic": """You are an expert Critical Reviewer specialising in ISO 21500:2021.
-You are the FIFTH and FINAL agent. You review ALL previous outputs including the schedule and Gantt chart.
+You are the FIFTH and FINAL agent. You review ALL previous outputs: PM Charter, Research Analysis, Project Plan Report, and Execution Schedule (including the Gantt chart).
 
-Your output must cover:
-1. Strengths of the project plan
-2. Gaps in ISO 21500 Process Group coverage
-3. Gaps in ISO 21500 Subject Group coverage
-4. Risks not adequately addressed
-5. Assumptions that are unrealistic or untested
-6. Inconsistencies between PM, Researcher, Reporter and Scheduler outputs
-7. Schedule feasibility — is the timeline realistic? Are resources sufficient?
-8. Specific recommendations to improve the plan
-9. Open questions requiring stakeholder input
+CRITICAL INSTRUCTION: Be concise and direct. Use bullet points. Complete ALL 9 sections — a concise complete review beats a detailed incomplete one.
+
+Your output must cover ALL of the following:
+
+1. Strengths — 3-5 bullets on what is well-covered
+2. ISO 21500 Process Group gaps — table: Process Group | Covered? | Gap/Comment
+3. ISO 21500 Subject Group gaps — table: Subject Group | Covered? | Gap/Comment
+4. Risks not adequately addressed — bullet list with recommended actions
+5. Unrealistic or untested assumptions — bullet list
+6. Inconsistencies between agent outputs — bullet list (or "None identified")
+7. Schedule feasibility — is the Gantt chart timeline realistic? Are resources sufficient? (5-8 sentences)
+8. Specific recommendations — numbered list, most important first
+9. Open questions for stakeholders — bullet list
 
 Start your response with: ## CRITICAL REVIEW
-Be constructive but direct - flag real issues that could derail the project.""",
+Be constructive but direct. Flag real issues that could derail the project. Complete all 9 sections.""",
 
     "scheduler": """You are an expert Scheduler specialising in ISO 21500:2021 time and resource management.
 You are the FOURTH agent. Create a detailed schedule based on all previous outputs.
@@ -179,11 +196,22 @@ Identify the critical path and dependencies.
 ## 5. SCHEDULE RISKS & CONTINGENCY
 Key schedule risks and buffer/mitigation strategies.
 
+IMPORTANT: The Gantt chart is your #1 deliverable. Do NOT truncate it. Complete ALL phases including Implementing, Controlling, and Closing before moving to other sections. Keep the resourcing table and critical path analysis concise (summary only) to ensure the Gantt chart is complete.
+
 Start your response with: ## EXECUTION SCHEDULE & RESOURCING PLAN
-You MUST include the Gantt chart — it is the most important deliverable from your analysis.""",
+Complete the Gantt chart in FULL before writing any other section.""",
 }
 
 AGENT_ORDER = ["pm", "researcher", "report", "scheduler", "critic"]
+
+# Agent-specific token limits — higher for agents that produce long structured output
+AGENT_MAX_TOKENS = {
+    "pm":         3500,   # Charter, WBS, stakeholder register
+    "researcher": 4500,   # Risk register, full RACI matrix, feasibility
+    "report":     6000,   # Full ISO report with all sections (longest output)
+    "scheduler":  5500,   # Gantt chart + resourcing table (very wide ASCII)
+    "critic":     4000,   # Critical review with all ISO checks
+}
 
 # ============================================================================
 # SLACK BOT (optional)
@@ -244,7 +272,7 @@ def _run_slack_pipeline(brief: str, say, thread_ts: str):
         try:
             with client.messages.stream(
                 model="claude-sonnet-4-6",
-                max_tokens=3000,
+                max_tokens=AGENT_MAX_TOKENS.get(agent_id, 4000),
                 system=AGENT_PROMPTS[agent_id],
                 messages=history,
             ) as stream:
@@ -331,7 +359,7 @@ async def _stream_pipeline(brief: str) -> AsyncGenerator[str, None]:
         try:
             with client.messages.stream(
                 model="claude-sonnet-4-6",
-                max_tokens=3000,
+                max_tokens=AGENT_MAX_TOKENS.get(agent_id, 4000),
                 system=AGENT_PROMPTS[agent_id],
                 messages=history,
             ) as stream:
